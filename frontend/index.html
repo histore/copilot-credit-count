@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>GitHub Copilot Token & Credit Counter</title>
+</head>
+<body>
+    <div id="app">
+        <div class="dashboard-container">
+            <!-- Header -->
+            <header class="dashboard-header">
+                <div class="logo-area">
+                    <span class="logo-icon">⚡</span>
+                    <div>
+                        <h1>Copilot Token & Credit Counter</h1>
+                        <p class="subtitle" data-i18n="subtitle">Statistics of your local AI activities, credits and usage</p>
+                    </div>
+                </div>
+                
+                <div class="controls-area" style="display: flex; gap: 0.75rem; align-items: center;">
+                    <div class="lang-switcher">
+                        <button class="lang-btn" data-lang="en" onclick="onLangChanged('en')">EN</button>
+                        <span class="lang-separator">|</span>
+                        <button class="lang-btn" data-lang="de" onclick="onLangChanged('de')">DE</button>
+                    </div>
+                    <button class="btn btn-primary" id="btn-scan" onclick="triggerScan()">
+                        <span class="btn-icon">🔄</span> <span data-i18n="btnRefresh">Refresh</span>
+                    </button>
+                    <button class="btn btn-secondary" id="btn-about" onclick="openAboutModal()">
+                        <span class="btn-icon">ℹ️</span> <span data-i18n="btnAbout">About</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Loading Overlay (for manual refreshes) -->
+            <div id="loading-overlay" class="loading-overlay hidden">
+                <div class="spinner-box">
+                    <div class="spinner"></div>
+                    <p data-i18n="loadingLogs">Scanning VS Code Copilot logs...</p>
+                </div>
+            </div>
+
+            <!-- Startup Warning Banner Overlay -->
+            <div id="startup-banner" class="loading-overlay">
+                <div class="spinner-box warning-box" style="max-width: 480px; text-align: center;">
+                    <div class="spinner"></div>
+                    <div style="margin-top: 1.25rem;">
+                        <p style="font-weight: 700; font-size: 1.15rem; color: #fbbf24; margin-bottom: 0.5rem;" data-i18n="startupTitle">Analyzing Copilot Data...</p>
+                        <p style="font-size: 0.9rem; line-height: 1.5; color: var(--text-secondary);" data-i18n="startupDisclaimer">
+                            Please note: The calculated metrics are only indicators and may be inaccurate or incomplete.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content Area -->
+            <main class="dashboard-main">
+                <!-- Top bar with dropdown and overall count -->
+                <div class="selection-bar card">
+                    <div class="select-group">
+                        <label for="month-select" data-i18n="selectMonthLabel">Selected Month:</label>
+                        <div class="select-wrapper">
+                            <select id="month-select" onchange="onMonthChanged(this.value)">
+                                <option value="" data-i18n="selectMonthLoading">Loading months...</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="overall-stat">
+                        <span class="overall-label" data-i18n="overallTotal">Overall Total:</span>
+                        <span class="overall-value" id="overall-total">- Tokens</span>
+                    </div>
+                </div>
+
+                <!-- KPI Grid -->
+                <div class="kpi-grid">
+                    <div class="card kpi-card kpi-total">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiTotalTokensTitle">Monthly Total Tokens</h3>
+                            <div class="kpi-value" id="kpi-total-tokens">0</div>
+                            <div class="kpi-trend" data-i18n="kpiTotalTokensTrend">Sum of all requests & completions</div>
+                        </div>
+                    </div>
+                    
+                    <div class="card kpi-card kpi-prompt">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiPromptTokensTitle">Prompt Tokens</h3>
+                            <div class="kpi-value" id="kpi-prompt-tokens">0</div>
+                            <div class="kpi-trend" data-i18n="kpiPromptTokensTrend">Sent context</div>
+                        </div>
+                    </div>
+
+                    <div class="card kpi-card kpi-completion">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiCompletionTokensTitle">Completion Tokens</h3>
+                            <div class="kpi-value" id="kpi-completion-tokens">0</div>
+                            <div class="kpi-trend" data-i18n="kpiCompletionTokensTrend">Generated code / responses</div>
+                        </div>
+                    </div>
+
+                    <div class="card kpi-card kpi-requests">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiTotalRequestsTitle">Sent Prompts</h3>
+                            <div class="kpi-value" id="kpi-total-requests">0</div>
+                            <div class="kpi-trend" data-i18n="kpiTotalRequestsTrend">Number of interactions (Requests)</div>
+                        </div>
+                    </div>
+
+                    <div class="card kpi-card kpi-aic">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiTotalAicTitle">AI Credits (AIC)</h3>
+                            <div class="kpi-value" id="kpi-total-aic">0.00</div>
+                            <div class="kpi-trend" data-i18n="kpiTotalAicTrend">Model-specific credits (AIC)</div>
+                        </div>
+                    </div>
+
+                    <div class="card kpi-card kpi-aiu">
+                        <div class="kpi-content">
+                            <h3 data-i18n="kpiTotalAiuTitle">AI Usage (AIU)</h3>
+                            <div class="kpi-value" id="kpi-total-aiu">0</div>
+                            <div class="kpi-trend" data-i18n="kpiTotalAiuTrend">Fine-grained compute (nano-AIU)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Workspaces Breakdown -->
+                <div class="workspaces-section card">
+                    <h2 data-i18n="workspaceSectionTitle">Consumption by VS Code Project (Workspace)</h2>
+                    <div id="workspaces-list" class="workspaces-list">
+                        <!-- Will be populated dynamically by JS -->
+                        <div class="empty-state">
+                            <span class="empty-state-icon">🔍</span>
+                            <p data-i18n="emptyStateNoData">No data available. Please perform a scan.</p>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="about-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="modal-logo">⚡</span>
+                    <h2 data-i18n="aboutTitle">About this App</h2>
+                </div>
+                <button class="modal-close" onclick="closeAboutModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <h3 data-i18n="aboutBodyTitle">Copilot Token & Credit Counter</h3>
+                <span class="version">Version 1.0.0</span>
+                <p class="description" data-i18n="aboutDescription">
+                    This application analyzes local GitHub Copilot log files in VS Code to evaluate the tokens, prompts, completions used, as well as the model-specific AI Credits (AIC) and fine-grained compute units (AIU).
+                </p>
+                <div class="author-info">
+                    <p>© 2026 Heino Stömmer</p>
+                    <p data-i18n="aboutLicense">Licensed under the Apache License, Version 2.0</p>
+                </div>
+                <div class="vibe-badge">
+                    <span class="vibe-icon">✨</span> Vibe coded with Gemini
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="closeAboutModal()" data-i18n="aboutClose">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="./src/main.js" type="module"></script>
+</body>
+</html>
