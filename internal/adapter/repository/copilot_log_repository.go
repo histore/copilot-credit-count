@@ -38,14 +38,17 @@ type CopilotLogRepository struct {
 }
 
 // NewCopilotLogRepository creates a new repository.
-// If storagePath is empty, it uses the default VS Code workspace storage path on Windows.
+// If storagePath is empty, it uses the default VS Code workspace storage path for the current OS.
 func NewCopilotLogRepository(storagePath string) *CopilotLogRepository {
 	if storagePath == "" {
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			appData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			// Fallback if user config directory cannot be determined
+			if home, errHome := os.UserHomeDir(); errHome == nil {
+				configDir = filepath.Join(home, ".config")
+			}
 		}
-		storagePath = filepath.Join(appData, "Code", "User", "workspaceStorage")
+		storagePath = filepath.Join(configDir, "Code", "User", "workspaceStorage")
 	}
 	return &CopilotLogRepository{storagePath: storagePath}
 }
