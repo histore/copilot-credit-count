@@ -1,4 +1,4 @@
-# GitHub Copilot Token & Credit Counter
+# Github Copilot Credit Count
 
 A lightweight, local desktop application built with **Go**, **Wails v2**, and **Vanilla JS** that scans, aggregates, and visualizes token consumption and credit usage from your local GitHub Copilot chat session logs.
 
