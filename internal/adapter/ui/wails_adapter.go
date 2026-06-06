@@ -17,8 +17,8 @@ package ui
 import (
 	"context"
 
-	"credit-count/internal/domain"
-	"credit-count/internal/usecase"
+	"github-copilot-credit-count/internal/domain"
+	"github-copilot-credit-count/internal/usecase"
 )
 
 // WailsAdapter coordinates frontend requests and business logic.

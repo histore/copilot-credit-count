@@ -17,9 +17,9 @@ package main
 import (
 	"embed"
 
-	"credit-count/internal/adapter/repository"
-	"credit-count/internal/adapter/ui"
-	"credit-count/internal/usecase"
+	"github-copilot-credit-count/internal/adapter/repository"
+	"github-copilot-credit-count/internal/adapter/ui"
+	"github-copilot-credit-count/internal/usecase"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"

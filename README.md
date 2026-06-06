@@ -8,7 +8,7 @@ A lightweight, local desktop application built with **Go**, **Wails v2**, and **
 - **Token & Credit Insights**: Tracks Prompt Tokens, Completion Tokens, Total Tokens, AI Credits (AIC), AI Usage (AIU), and individual request counts.
 - **Workspace Isolation**: Shows exactly which project or workspace is consuming how many tokens and credits.
 - **Monthly Statistics**: Filters usage data by month with detailed workspace-specific breakdowns.
-- **Performance Caching**: Implements a JSON-based filesystem caching layer (`credit-count-cache.json`) to skip unmodified files during subsequent scans, accelerating load times.
+- **Performance Caching**: Implements a JSON-based filesystem caching layer (`github-copilot-credit-count-cache.json`) to skip unmodified files during subsequent scans, accelerating load times.
 - **Internationalization (i18n)**: Fully localized interface support. Displays in English by default and automatically switches to German when the system locale is set to German. Manual toggle available in the header.
 - **Sleek UX**: Dynamic design with responsive styling, a glassmorphic dark-theme card layout, loading indicators, and informative tooltips.
 
@@ -80,6 +80,29 @@ Instead, the recommended approaches are:
 1. **CI/CD Build Pipelines (Highly Recommended)**: Use platforms like GitHub Actions or GitLab CI to build natively on runners of each respective operating system (Windows, Ubuntu, macOS). You can use community actions such as `dAppServer/wails-build-action`.
 2. **Docker / Containerization**: Use Docker containers with pre-configured cross-compiler toolchains and libraries.
 
+### Headless CLI Variant
+
+If you want to run `github-copilot-credit-count` in environments without a graphical user interface (headless systems, terminals, or CI/CD pipelines), you can build and run the CLI version:
+
+#### Running the CLI
+To run the CLI directly from the source code:
+```bash
+go run ./cmd/github-copilot-credit-count-cli/main.go [flags]
+```
+
+#### CLI Flags
+- `--path <string>`: Specify a custom VS Code workspace storage directory (defaults to OS user config directory).
+- `--format <text|json>`: Define the output format (defaults to `text`).
+- `--month <YYYY-MM>`: Filter details for a specific month (e.g. `2026-06`).
+
+#### Building the CLI
+To build a standalone CLI executable:
+```bash
+go build -o build/bin/github-copilot-credit-count-cli ./cmd/github-copilot-credit-count-cli/main.go
+```
+Since this CLI variant contains no CGO/Wails UI dependencies, you can easily cross-compile it for other target systems using standard environment variables (e.g., `GOOS=linux GOARCH=amd64 go build ...`).
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
+

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"credit-count/internal/domain"
+	"github-copilot-credit-count/internal/domain"
 )
 
 // Regex to match "0.3 credits" or "1x"
@@ -63,7 +63,7 @@ func (r *CopilotLogRepository) ScanSessions() ([]domain.SessionEvent, map[string
 		return nil, nil, err
 	}
 
-	cachePath := filepath.Join(r.storagePath, "credit-count-cache.json")
+	cachePath := filepath.Join(r.storagePath, "github-copilot-credit-count-cache.json")
 	oldCache := r.loadCache(cachePath)
 	newCache := ScanCache{
 		Files: make(map[string]FileCacheEntry),

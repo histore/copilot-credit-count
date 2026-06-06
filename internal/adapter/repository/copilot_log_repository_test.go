@@ -169,7 +169,7 @@ func TestParseJSONLSession(t *testing.T) {
 
 func TestScanSessionsWithCache(t *testing.T) {
 	// Create a temporary storage directory
-	storageDir, err := os.MkdirTemp("", "credit-count-test-*")
+	storageDir, err := os.MkdirTemp("", "github-copilot-credit-count-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp storage dir: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestScanSessionsWithCache(t *testing.T) {
 	}
 
 	// Verify cache file was created
-	cachePath := filepath.Join(storageDir, "credit-count-cache.json")
+	cachePath := filepath.Join(storageDir, "github-copilot-credit-count-cache.json")
 	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
 		t.Errorf("expected cache file to be created at %s", cachePath)
 	}

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"credit-count/internal/domain"
+	"github-copilot-credit-count/internal/domain"
 )
 
 // MockTokenRepository implementation.

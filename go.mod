@@ -1,4 +1,4 @@
-module credit-count
+module github-copilot-credit-count
 
 go 1.23
 

@@ -19,7 +19,7 @@ import (
 	"sort"
 	"sync"
 
-	"credit-count/internal/domain"
+	"github-copilot-credit-count/internal/domain"
 )
 
 // TokenUsecase handles the core business logic of token count aggregation.
