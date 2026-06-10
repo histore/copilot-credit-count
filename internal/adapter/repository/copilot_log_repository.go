@@ -17,6 +17,7 @@ package repository
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -34,23 +35,35 @@ var detailsRegex = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*(?:credits?|x)`)
 
 // CopilotLogRepository implements domain.TokenRepository for VS Code storage.
 type CopilotLogRepository struct {
-	storagePath string
+	storagePaths []string
 }
 
 // NewCopilotLogRepository creates a new repository.
-// If storagePath is empty, it uses the default VS Code workspace storage path for the current OS.
-func NewCopilotLogRepository(storagePath string) *CopilotLogRepository {
-	if storagePath == "" {
-		configDir, err := os.UserConfigDir()
-		if err != nil {
-			// Fallback if user config directory cannot be determined
-			if home, errHome := os.UserHomeDir(); errHome == nil {
-				configDir = filepath.Join(home, ".config")
-			}
+// If customPath is not empty, it uses it. Otherwise, it detects paths for VS Code and Theia.
+func NewCopilotLogRepository(customPath string) *CopilotLogRepository {
+	var paths []string
+
+	if customPath != "" {
+		paths = append(paths, customPath)
+	} else {
+		homeDir, errHome := os.UserHomeDir()
+		configDir, errConfig := os.UserConfigDir()
+		if errConfig != nil && errHome == nil {
+			configDir = filepath.Join(homeDir, ".config")
 		}
-		storagePath = filepath.Join(configDir, "Code", "User", "workspaceStorage")
+
+		// VS Code
+		if configDir != "" {
+			paths = append(paths, filepath.Join(configDir, "Code", "User", "workspaceStorage"))
+		}
+
+		// Theia
+		if homeDir != "" {
+			paths = append(paths, filepath.Join(homeDir, ".theia", "workspace-storage"))
+		}
 	}
-	return &CopilotLogRepository{storagePath: storagePath}
+
+	return &CopilotLogRepository{storagePaths: paths}
 }
 
 // ScanSessions scans all workspaces for Copilot chat sessions, utilizing a cache.
@@ -58,96 +71,98 @@ func (r *CopilotLogRepository) ScanSessions() ([]domain.SessionEvent, map[string
 	workspaces := make(map[string]domain.Workspace)
 	var events []domain.SessionEvent
 
-	// Check if workspace storage path exists.
-	if _, err := os.Stat(r.storagePath); os.IsNotExist(err) {
-		return nil, nil, err
-	}
-
-	cachePath := filepath.Join(r.storagePath, "github-copilot-credit-count-cache.json")
-	oldCache := r.loadCache(cachePath)
-	newCache := ScanCache{
-		Files: make(map[string]FileCacheEntry),
-	}
-
-	// Read workspace directories.
-	entries, err := os.ReadDir(r.storagePath)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, storagePath := range r.storagePaths {
+		// Check if workspace storage path exists.
+		if _, err := os.Stat(storagePath); os.IsNotExist(err) {
 			continue
 		}
 
-		workspaceID := entry.Name()
-		workspaceDir := filepath.Join(r.storagePath, workspaceID)
-
-		// 1. Resolve workspace name from workspace.json
-		wsInfo := r.resolveWorkspace(workspaceDir, workspaceID)
-		workspaces[workspaceID] = wsInfo
-
-		// 2. Scan chatSessions directory
-		sessionsDir := filepath.Join(workspaceDir, "chatSessions")
-		if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
-			continue
+		cachePath := filepath.Join(storagePath, "github-copilot-credit-count-cache-v2.json")
+		oldCache := r.loadCache(cachePath)
+		newCache := ScanCache{
+			Files: make(map[string]FileCacheEntry),
 		}
 
-		sessionEntries, err := os.ReadDir(sessionsDir)
+		// Read workspace directories.
+		entries, err := os.ReadDir(storagePath)
 		if err != nil {
 			continue
 		}
 
-		for _, sEntry := range sessionEntries {
-			if sEntry.IsDir() {
+		for _, entry := range entries {
+			if !entry.IsDir() {
 				continue
 			}
 
-			filePath := filepath.Join(sessionsDir, sEntry.Name())
-			ext := strings.ToLower(filepath.Ext(sEntry.Name()))
-			sessionID := strings.TrimSuffix(sEntry.Name(), filepath.Ext(sEntry.Name()))
+			workspaceID := entry.Name()
+			workspaceDir := filepath.Join(storagePath, workspaceID)
 
-			if ext != ".json" && ext != ".jsonl" {
+			// 1. Resolve workspace name from workspace.json
+			wsInfo := r.resolveWorkspace(workspaceDir, workspaceID)
+			workspaces[workspaceID] = wsInfo
+
+			// 2. Scan chatSessions directory
+			sessionsDir := filepath.Join(workspaceDir, "chatSessions")
+			if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
 				continue
 			}
 
-			fileInfo, err := os.Stat(filePath)
+			sessionEntries, err := os.ReadDir(sessionsDir)
 			if err != nil {
 				continue
 			}
-			modTime := fileInfo.ModTime()
-			size := fileInfo.Size()
 
-			relPath, err := filepath.Rel(r.storagePath, filePath)
-			if err != nil {
-				relPath = filePath
-			}
-			relPath = strings.ReplaceAll(relPath, "\\", "/")
-
-			var sessionEvents []domain.SessionEvent
-			if cachedEntry, exists := oldCache.Files[relPath]; exists && cachedEntry.ModTime.Equal(modTime) && cachedEntry.Size == size {
-				sessionEvents = cachedEntry.Events
-			} else {
-				if ext == ".json" {
-					sessionEvents = r.parseJSONSession(filePath, workspaceID, sessionID)
-				} else if ext == ".jsonl" {
-					sessionEvents = r.parseJSONLSession(filePath, workspaceID, sessionID)
+			for _, sEntry := range sessionEntries {
+				if sEntry.IsDir() {
+					continue
 				}
-			}
 
-			newCache.Files[relPath] = FileCacheEntry{
-				Path:    relPath,
-				ModTime: modTime,
-				Size:    size,
-				Events:  sessionEvents,
-			}
+				filePath := filepath.Join(sessionsDir, sEntry.Name())
+				ext := strings.ToLower(filepath.Ext(sEntry.Name()))
+				sessionID := strings.TrimSuffix(sEntry.Name(), filepath.Ext(sEntry.Name()))
 
-			events = append(events, sessionEvents...)
+				if ext != ".json" && ext != ".jsonl" {
+					continue
+				}
+
+				fileInfo, err := os.Stat(filePath)
+				if err != nil {
+					continue
+				}
+				modTime := fileInfo.ModTime()
+				size := fileInfo.Size()
+
+				relPath, err := filepath.Rel(storagePath, filePath)
+				if err != nil {
+					relPath = filePath
+				}
+				relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+				var sessionEvents []domain.SessionEvent
+				if cachedEntry, exists := oldCache.Files[relPath]; exists && cachedEntry.ModTime.Equal(modTime) && cachedEntry.Size == size {
+					sessionEvents = cachedEntry.Events
+				} else {
+					if ext == ".json" {
+						sessionEvents = r.parseJSONSession(filePath, workspaceID, sessionID)
+					} else if ext == ".jsonl" {
+						sessionEvents = r.parseJSONLSession(filePath, workspaceID, sessionID)
+					}
+				}
+
+				newCache.Files[relPath] = FileCacheEntry{
+					Path:    relPath,
+					ModTime: modTime,
+					Size:    size,
+					Events:  sessionEvents,
+				}
+
+				events = append(events, sessionEvents...)
+			}
 		}
-	}
 
-	// Persist updated cache
-	_ = r.saveCache(cachePath, newCache)
+		// Persist updated cache
+		_ = r.saveCache(cachePath, newCache)
+	}
 
 	return events, workspaces, nil
 }
@@ -213,8 +228,21 @@ func (r *CopilotLogRepository) parseJSONSession(filePath, workspaceID, sessionID
 			continue
 		}
 
-		// Parse timestamp
-		ts := parseTimestamp(reqMap["timestamp"])
+		// Parse timestamp from completedAt in modelState, request level completedAt, or timestamp
+		var ts time.Time
+		if modelState, ok := reqMap["modelState"].(map[string]interface{}); ok {
+			if completedAtVal, ok := modelState["completedAt"]; ok {
+				ts = parseTimestamp(completedAtVal)
+			}
+		}
+		if ts.IsZero() {
+			if completedAtVal, ok := reqMap["completedAt"]; ok {
+				ts = parseTimestamp(completedAtVal)
+			}
+		}
+		if ts.IsZero() {
+			ts = parseTimestamp(reqMap["timestamp"])
+		}
 
 		// Extract tokens and credits recursively from the request map
 		prompt, comp, total, aic, aiu := r.extractTokensFromMap(reqMap)
@@ -255,7 +283,7 @@ func (r *CopilotLogRepository) parseJSONLSession(filePath, workspaceID, sessionI
 	}
 	defer file.Close()
 
-	var events []domain.SessionEvent
+	seenRequests := make(map[string]domain.SessionEvent)
 	reader := bufio.NewReader(file)
 
 	for {
@@ -280,50 +308,137 @@ func (r *CopilotLogRepository) parseJSONLSession(filePath, workspaceID, sessionI
 			continue
 		}
 
-		// Extract timestamp
-		var ts time.Time
-		if tVal, ok := eventMap["timestamp"]; ok {
-			ts = parseTimestamp(tVal)
-		} else if tsVal, ok := eventMap["ts"]; ok {
-			ts = parseTimestamp(tsVal)
+		// Extract line-level timestamp
+		var lineTS time.Time
+		if modelState, ok := eventMap["modelState"].(map[string]interface{}); ok {
+			if completedAtVal, ok := modelState["completedAt"]; ok {
+				lineTS = parseTimestamp(completedAtVal)
+			}
+		}
+		if lineTS.IsZero() {
+			if completedAtVal, ok := eventMap["completedAt"]; ok {
+				lineTS = parseTimestamp(completedAtVal)
+			}
+		}
+		if lineTS.IsZero() {
+			if tVal, ok := eventMap["timestamp"]; ok {
+				lineTS = parseTimestamp(tVal)
+			} else if tsVal, ok := eventMap["ts"]; ok {
+				lineTS = parseTimestamp(tsVal)
+			}
+		}
+		if lineTS.IsZero() {
+			lineTS = time.Now() // Fallback
 		}
 
-		if ts.IsZero() {
-			ts = time.Now() // Fallback
+		// Extract any requests array
+		var requestsRaw []interface{}
+		if reqs, ok := eventMap["requests"].([]interface{}); ok {
+			requestsRaw = reqs
+		} else if vMap, ok := eventMap["v"].(map[string]interface{}); ok {
+			if reqs, ok := vMap["requests"].([]interface{}); ok {
+				requestsRaw = reqs
+			}
 		}
 
-		// Look for root-level token and credit keys first to avoid double counting nested tool call tokens.
-		prompt, comp, total, aic, aiu := r.extractRootTokens(eventMap)
+		if len(requestsRaw) > 0 {
+			for _, reqRaw := range requestsRaw {
+				reqMap, ok := reqRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
 
-		// If no root tokens/credits are found, fall back to recursive scanning.
-		if total == 0 && prompt == 0 && comp == 0 && aic == 0 {
-			prompt, comp, total, aic, aiu = r.extractTokensFromMap(eventMap)
-		}
+				// Parse request-specific timestamp
+				var reqTS time.Time
+				if modelState, ok := reqMap["modelState"].(map[string]interface{}); ok {
+					if completedAtVal, ok := modelState["completedAt"]; ok {
+						reqTS = parseTimestamp(completedAtVal)
+					}
+				}
+				if reqTS.IsZero() {
+					if completedAtVal, ok := reqMap["completedAt"]; ok {
+						reqTS = parseTimestamp(completedAtVal)
+					}
+				}
+				if reqTS.IsZero() {
+					if tVal, ok := reqMap["timestamp"]; ok {
+						reqTS = parseTimestamp(tVal)
+					} else if tsVal, ok := reqMap["ts"]; ok {
+						reqTS = parseTimestamp(tsVal)
+					}
+				}
+				if reqTS.IsZero() {
+					reqTS = lineTS
+				}
 
-		if total == 0 && (prompt > 0 || comp > 0) {
-			total = prompt + comp
-		}
+				// Generate unique request key for deduplication
+				var reqID string
+				if rid, ok := reqMap["requestId"].(string); ok && rid != "" {
+					reqID = rid
+				} else if rid, ok := reqMap["id"].(string); ok && rid != "" {
+					reqID = rid
+				} else {
+					reqID = fmt.Sprintf("req_%d", reqTS.UnixNano())
+				}
 
-		// Skip events with no tokens and no credits
-		if total > 0 || aic > 0 {
-			events = append(events, domain.SessionEvent{
-				WorkspaceID: workspaceID,
-				SessionID:   sessionID,
-				Timestamp:   ts,
-				Tokens: domain.TokenUsage{
-					Prompt:     prompt,
-					Completion: comp,
-					Total:      total,
-					AIC:        aic,
-					AIU:        aiu,
-					Requests:   1,
-				},
-			})
+				// Extract tokens and credits from this specific request
+				prompt, comp, total, aic, aiu := r.extractTokensFromMap(reqMap)
+				if total == 0 && (prompt > 0 || comp > 0) {
+					total = prompt + comp
+				}
+
+				if total > 0 || aic > 0 {
+					seenRequests[reqID] = domain.SessionEvent{
+						WorkspaceID: workspaceID,
+						SessionID:   sessionID,
+						Timestamp:   reqTS,
+						Tokens: domain.TokenUsage{
+							Prompt:     prompt,
+							Completion: comp,
+							Total:      total,
+							AIC:        aic,
+							AIU:        aiu,
+							Requests:   1,
+						},
+					}
+				}
+			}
+		} else {
+			// Fallback: parse the line itself as a single event
+			prompt, comp, total, aic, aiu := r.extractRootTokens(eventMap)
+			if total == 0 && prompt == 0 && comp == 0 && aic == 0 {
+				prompt, comp, total, aic, aiu = r.extractTokensFromMap(eventMap)
+			}
+			if total == 0 && (prompt > 0 || comp > 0) {
+				total = prompt + comp
+			}
+
+			if total > 0 || aic > 0 {
+				reqID := fmt.Sprintf("line_%d_%d", lineTS.UnixNano(), total)
+				seenRequests[reqID] = domain.SessionEvent{
+					WorkspaceID: workspaceID,
+					SessionID:   sessionID,
+					Timestamp:   lineTS,
+					Tokens: domain.TokenUsage{
+						Prompt:     prompt,
+						Completion: comp,
+						Total:      total,
+						AIC:        aic,
+						AIU:        aiu,
+						Requests:   1,
+					},
+				}
+			}
 		}
 
 		if err == io.EOF {
 			break
 		}
+	}
+
+	events := make([]domain.SessionEvent, 0, len(seenRequests))
+	for _, ev := range seenRequests {
+		events = append(events, ev)
 	}
 
 	return events

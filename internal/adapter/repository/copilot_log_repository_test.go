@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github-copilot-credit-count/internal/domain"
 )
 
 func TestParseWorkspaceURI(t *testing.T) {
@@ -150,20 +152,29 @@ func TestParseJSONLSession(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// Line 1: 100 prompt, 50 comp, 150 total, 0.3 AIC, 300,000,000 AIU
-	if events[0].Tokens.Prompt != 100 || events[0].Tokens.Completion != 50 || events[0].Tokens.Total != 150 {
-		t.Errorf("first event token counts mismatch: %+v", events[0].Tokens)
+	var event1, event2 domain.SessionEvent
+	if events[0].Tokens.Total == 150 {
+		event1 = events[0]
+		event2 = events[1]
+	} else {
+		event1 = events[1]
+		event2 = events[0]
 	}
-	if events[0].Tokens.AIC != 0.3 || events[0].Tokens.AIU != 300000000 {
-		t.Errorf("first event credits mismatch: AIC=%f, AIU=%f", events[0].Tokens.AIC, events[0].Tokens.AIU)
+
+	// Line 1: 100 prompt, 50 comp, 150 total, 0.3 AIC, 300,000,000 AIU
+	if event1.Tokens.Prompt != 100 || event1.Tokens.Completion != 50 || event1.Tokens.Total != 150 {
+		t.Errorf("first event token counts mismatch: %+v", event1.Tokens)
+	}
+	if event1.Tokens.AIC != 0.3 || event1.Tokens.AIU != 300000000 {
+		t.Errorf("first event credits mismatch: AIC=%f, AIU=%f", event1.Tokens.AIC, event1.Tokens.AIU)
 	}
 
 	// Line 2: 128 total tokens, 1.0 AIC, 1,000,000,000 AIU
-	if events[1].Tokens.Total != 128 {
-		t.Errorf("second event token count mismatch, expected 128 total, got %d", events[1].Tokens.Total)
+	if event2.Tokens.Total != 128 {
+		t.Errorf("second event token count mismatch, expected 128 total, got %d", event2.Tokens.Total)
 	}
-	if events[1].Tokens.AIC != 1.0 || events[1].Tokens.AIU != 1000000000 {
-		t.Errorf("second event credits mismatch: AIC=%f, AIU=%f", events[1].Tokens.AIC, events[1].Tokens.AIU)
+	if event2.Tokens.AIC != 1.0 || event2.Tokens.AIU != 1000000000 {
+		t.Errorf("second event credits mismatch: AIC=%f, AIU=%f", event2.Tokens.AIC, event2.Tokens.AIU)
 	}
 }
 
@@ -210,7 +221,7 @@ func TestScanSessionsWithCache(t *testing.T) {
 	}
 
 	// Verify cache file was created
-	cachePath := filepath.Join(storageDir, "github-copilot-credit-count-cache.json")
+	cachePath := filepath.Join(storageDir, "github-copilot-credit-count-cache-v2.json")
 	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
 		t.Errorf("expected cache file to be created at %s", cachePath)
 	}
@@ -272,3 +283,55 @@ func TestScanSessionsWithCache(t *testing.T) {
 		t.Errorf("expected cache miss yielding 1000 tokens, but got %d", events3[0].Tokens.Total)
 	}
 }
+
+func TestParseJSONLSessionWithNestedRequestsAndDeduplication(t *testing.T) {
+	testDir := filepath.Join(".", "test_temp_jsonl_nested")
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		t.Fatalf("failed to create test directory: %v", err)
+	}
+	defer os.RemoveAll(testDir)
+
+	// Line 1: Request 1 exists with 10 tokens (completedAt June)
+	// Line 2: Request 1 is updated to 50 tokens, Request 2 is added with 100 tokens (completedAt July)
+	mockJSONLContent := `{"kind":0,"v":{"requests":[{"requestId":"req1","modelState":{"value":1,"completedAt":1780670330000},"promptTokens":10,"completionTokens":0}]}}
+{"kind":2,"v":{"requests":[{"requestId":"req1","modelState":{"value":1,"completedAt":1780670330000},"promptTokens":20,"completionTokens":30},{"requestId":"req2","modelState":{"value":1,"completedAt":1783262330000},"promptTokens":50,"completionTokens":50}]}}`
+
+	filePath := filepath.Join(testDir, "session.jsonl")
+	if err := os.WriteFile(filePath, []byte(mockJSONLContent), 0644); err != nil {
+		t.Fatalf("failed writing mock jsonl: %v", err)
+	}
+
+	repo := NewCopilotLogRepository("")
+	events := repo.parseJSONLSession(filePath, "test-ws", "session")
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 unique request events, got %d", len(events))
+	}
+
+	var req1, req2 *domain.SessionEvent
+	for i := range events {
+		if events[i].Timestamp.Unix() == 1780670330 {
+			req1 = &events[i]
+		} else if events[i].Timestamp.Unix() == 1783262330 {
+			req2 = &events[i]
+		}
+	}
+
+	if req1 == nil {
+		t.Fatalf("could not find req1 by timestamp")
+	}
+	if req2 == nil {
+		t.Fatalf("could not find req2 by timestamp")
+	}
+
+	// Verify req1 has the updated tokens (20 prompt + 30 completion = 50 total)
+	if req1.Tokens.Prompt != 20 || req1.Tokens.Completion != 30 || req1.Tokens.Total != 50 {
+		t.Errorf("req1 tokens mismatch: %+v", req1.Tokens)
+	}
+
+	// Verify req2 has correct tokens (50 prompt + 50 completion = 100 total)
+	if req2.Tokens.Prompt != 50 || req2.Tokens.Completion != 50 || req2.Tokens.Total != 100 {
+		t.Errorf("req2 tokens mismatch: %+v", req2.Tokens)
+	}
+}
+

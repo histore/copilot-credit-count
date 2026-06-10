@@ -63,14 +63,19 @@ This compiles the Go backend and launches Vite in hot-reload mode for frontend d
 
 ## Building
 
-To build a standalone, production-ready desktop package:
+The project uses a central Go build script (`build.go`) which bundles the versioning for all components (GUI, Windows Installer, and CLI).
 
-### Standard Build
-Run the build command in the project root:
+To compile the Wails GUI and the CLI version simultaneously, run the following command in the root directory:
+
 ```bash
-wails build
+go run build.go
 ```
-The resulting executable will be placed in the `build/bin/` directory.
+
+This script automatically updates the metadata in `wails.json` (important for the NSIS installer) and injects the version into the CLI app.
+
+The compiled executables will be placed in:
+- **GUI Application**: `build/bin/`
+- **CLI Application**: `bin/`
 
 ### Cross-Compilation
 
@@ -94,13 +99,14 @@ go run ./cmd/github-copilot-credit-count-cli/main.go [flags]
 - `--path <string>`: Specify a custom VS Code workspace storage directory (defaults to OS user config directory).
 - `--format <text|json>`: Define the output format (defaults to `text`).
 - `--month <YYYY-MM>`: Filter details for a specific month (e.g. `2026-06`).
+- `--version`: Print the version and exit.
 
-#### Building the CLI
-To build a standalone CLI executable:
+#### Manual CLI Compilation (without build.go)
+If you only want to build the CLI (without Wails dependencies) manually or cross-compile it for another operating system, you can do this using standard Go commands:
 ```bash
-go build -o build/bin/github-copilot-credit-count-cli ./cmd/github-copilot-credit-count-cli/main.go
+go build -ldflags "-X main.Version=1.0.0" -o bin/github-copilot-credit-count-cli ./cmd/github-copilot-credit-count-cli
 ```
-Since this CLI variant contains no CGO/Wails UI dependencies, you can easily cross-compile it for other target systems using standard environment variables (e.g., `GOOS=linux GOARCH=amd64 go build ...`).
+Since the CLI has no CGO/Wails dependencies, environment variables like `GOOS=linux GOARCH=amd64` can be applied without issues.
 
 ## License
 

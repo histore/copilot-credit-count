@@ -26,6 +26,8 @@ import (
 	"github-copilot-credit-count/internal/usecase"
 )
 
+var Version = "dev"
+
 type cliOutput struct {
 	Overall         domain.TokenUsage    `json:"overall"`
 	AvailableMonths []string             `json:"availableMonths"`
@@ -37,7 +39,13 @@ func main() {
 	pathFlag := flag.String("path", "", "Custom VS Code workspace storage path")
 	formatFlag := flag.String("format", "text", "Output format: 'text' or 'json'")
 	monthFlag := flag.String("month", "", "Specific month to show details for (format: YYYY-MM)")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("GitHub Copilot Credit Count CLI version %s\n", Version)
+		os.Exit(0)
+	}
 
 	// Initialize Clean Architecture layers
 	repo := repository.NewCopilotLogRepository(*pathFlag)
