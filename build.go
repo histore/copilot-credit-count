@@ -11,7 +11,7 @@ import (
 )
 
 // Central version definition
-const version = "1.6.0"
+const version = "1.6.1"
 
 func main() {
 	fmt.Printf("Starting build process for version %s...\n", version)
