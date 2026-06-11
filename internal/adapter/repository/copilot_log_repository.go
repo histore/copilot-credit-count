@@ -33,15 +33,17 @@ import (
 // Regex to match "0.3 credits" or "1x"
 var detailsRegex = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*(?:credits?|x)`)
 
-// CopilotLogRepository implements domain.TokenRepository for VS Code storage.
+// CopilotLogRepository implements domain.TokenRepository for IDE and CLI storage.
 type CopilotLogRepository struct {
-	storagePaths []string
+	storagePaths    []string
+	cliStoragePaths []string
 }
 
 // NewCopilotLogRepository creates a new repository.
-// If customPath is not empty, it uses it. Otherwise, it detects paths for VS Code and Theia.
+// If customPath is not empty, it uses it. Otherwise, it detects paths for VS Code, Theia, and GitHub Copilot CLI.
 func NewCopilotLogRepository(customPath string) *CopilotLogRepository {
 	var paths []string
+	var cliPaths []string
 
 	if customPath != "" {
 		paths = append(paths, customPath)
@@ -61,9 +63,17 @@ func NewCopilotLogRepository(customPath string) *CopilotLogRepository {
 		if homeDir != "" {
 			paths = append(paths, filepath.Join(homeDir, ".theia", "workspace-storage"))
 		}
+
+		// GitHub Copilot CLI
+		if homeDir != "" {
+			cliPaths = append(cliPaths, filepath.Join(homeDir, ".copilot", "session-state"))
+		}
 	}
 
-	return &CopilotLogRepository{storagePaths: paths}
+	return &CopilotLogRepository{
+		storagePaths:    paths,
+		cliStoragePaths: cliPaths,
+	}
 }
 
 // ScanSessions scans all workspaces for Copilot chat sessions, utilizing a cache.
@@ -71,6 +81,7 @@ func (r *CopilotLogRepository) ScanSessions() ([]domain.SessionEvent, map[string
 	workspaces := make(map[string]domain.Workspace)
 	var events []domain.SessionEvent
 
+	// Scan IDE workspaces
 	for _, storagePath := range r.storagePaths {
 		// Check if workspace storage path exists.
 		if _, err := os.Stat(storagePath); os.IsNotExist(err) {
@@ -164,6 +175,75 @@ func (r *CopilotLogRepository) ScanSessions() ([]domain.SessionEvent, map[string
 		_ = r.saveCache(cachePath, newCache)
 	}
 
+	// Scan GitHub Copilot CLI sessions
+	for _, cliPath := range r.cliStoragePaths {
+		if _, err := os.Stat(cliPath); os.IsNotExist(err) {
+			continue
+		}
+
+		cachePath := filepath.Join(cliPath, "github-copilot-credit-count-cache-v2.json")
+		oldCache := r.loadCache(cachePath)
+		newCache := ScanCache{
+			Files: make(map[string]FileCacheEntry),
+		}
+
+		entries, err := os.ReadDir(cliPath)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			sessionID := entry.Name()
+			sessionDir := filepath.Join(cliPath, sessionID)
+
+			// 1. Resolve workspace name from workspace.yaml
+			wsInfo := r.resolveCLIWorkspace(sessionDir, sessionID)
+			workspaces[wsInfo.ID] = wsInfo
+
+			// 2. Parse events.jsonl
+			filePath := filepath.Join(sessionDir, "events.jsonl")
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				continue
+			}
+
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				continue
+			}
+			modTime := fileInfo.ModTime()
+			size := fileInfo.Size()
+
+			relPath, err := filepath.Rel(cliPath, filePath)
+			if err != nil {
+				relPath = filePath
+			}
+			relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+			var sessionEvents []domain.SessionEvent
+			if cachedEntry, exists := oldCache.Files[relPath]; exists && cachedEntry.ModTime.Equal(modTime) && cachedEntry.Size == size {
+				sessionEvents = cachedEntry.Events
+			} else {
+				sessionEvents = r.parseJSONLSession(filePath, wsInfo.ID, sessionID)
+			}
+
+			newCache.Files[relPath] = FileCacheEntry{
+				Path:    relPath,
+				ModTime: modTime,
+				Size:    size,
+				Events:  sessionEvents,
+			}
+
+			events = append(events, sessionEvents...)
+		}
+
+		// Persist updated cache
+		_ = r.saveCache(cachePath, newCache)
+	}
+
 	return events, workspaces, nil
 }
 
@@ -198,6 +278,55 @@ func (r *CopilotLogRepository) resolveWorkspace(dir, id string) domain.Workspace
 		decodedPath, name := parseWorkspaceURI(uriStr)
 		ws.Path = decodedPath
 		ws.Name = name
+	}
+
+	return ws
+}
+
+// resolveCLIWorkspace reads workspace.yaml to get workspace path and name.
+func (r *CopilotLogRepository) resolveCLIWorkspace(dir, sessionID string) domain.Workspace {
+	ws := domain.Workspace{
+		ID:   "cli_" + sessionID,
+		Path: "",
+		Name: "CLI Session",
+	}
+
+	yamlPath := filepath.Join(dir, "workspace.yaml")
+	file, err := os.Open(yamlPath)
+	if err != nil {
+		return ws
+	}
+	defer file.Close()
+
+	var cwd, name string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if key == "cwd" {
+				cwd = strings.Trim(val, `"'`)
+			} else if key == "name" {
+				name = strings.Trim(val, `"'`)
+			}
+		}
+	}
+
+	if cwd != "" {
+		cwd = filepath.Clean(cwd)
+		cwd = strings.ReplaceAll(cwd, "\\", "/")
+		ws.Path = cwd
+		ws.ID = "cli_" + strings.ToLower(cwd)
+
+		if name != "" {
+			ws.Name = name + " (CLI)"
+		} else {
+			ws.Name = filepath.Base(cwd) + " (CLI)"
+		}
+	} else if name != "" {
+		ws.Name = name + " (CLI)"
 	}
 
 	return ws
@@ -246,6 +375,11 @@ func (r *CopilotLogRepository) parseJSONSession(filePath, workspaceID, sessionID
 
 		// Extract tokens and credits recursively from the request map
 		prompt, comp, total, aic, aiu := r.extractTokensFromMap(reqMap)
+		if aic == 0 {
+			if model := r.extractModel(reqMap); model != "" {
+				aic, aiu = mapModelToCredits(model)
+			}
+		}
 
 		// If total is 0 but prompt or comp are set
 		if total == 0 && (prompt > 0 || comp > 0) {
@@ -383,6 +517,13 @@ func (r *CopilotLogRepository) parseJSONLSession(filePath, workspaceID, sessionI
 
 				// Extract tokens and credits from this specific request
 				prompt, comp, total, aic, aiu := r.extractTokensFromMap(reqMap)
+				if aic == 0 {
+					if model := r.extractModel(reqMap); model != "" {
+						aic, aiu = mapModelToCredits(model)
+					} else if model := r.extractModel(eventMap); model != "" {
+						aic, aiu = mapModelToCredits(model)
+					}
+				}
 				if total == 0 && (prompt > 0 || comp > 0) {
 					total = prompt + comp
 				}
@@ -404,17 +545,34 @@ func (r *CopilotLogRepository) parseJSONLSession(filePath, workspaceID, sessionI
 				}
 			}
 		} else {
-			// Fallback: parse the line itself as a single event
 			prompt, comp, total, aic, aiu := r.extractRootTokens(eventMap)
 			if total == 0 && prompt == 0 && comp == 0 && aic == 0 {
 				prompt, comp, total, aic, aiu = r.extractTokensFromMap(eventMap)
+			}
+			if aic == 0 {
+				if model := r.extractModel(eventMap); model != "" {
+					aic, aiu = mapModelToCredits(model)
+				}
 			}
 			if total == 0 && (prompt > 0 || comp > 0) {
 				total = prompt + comp
 			}
 
 			if total > 0 || aic > 0 {
-				reqID := fmt.Sprintf("line_%d_%d", lineTS.UnixNano(), total)
+				var reqID string
+				if rid, ok := eventMap["id"].(string); ok && rid != "" {
+					reqID = rid
+				} else if dataMap, ok := eventMap["data"].(map[string]interface{}); ok {
+					if rid, ok := dataMap["messageId"].(string); ok && rid != "" {
+						reqID = rid
+					} else if rid, ok := dataMap["requestId"].(string); ok && rid != "" {
+						reqID = rid
+					}
+				}
+				if reqID == "" {
+					reqID = fmt.Sprintf("line_%d_%d", lineTS.UnixNano(), total)
+				}
+
 				seenRequests[reqID] = domain.SessionEvent{
 					WorkspaceID: workspaceID,
 					SessionID:   sessionID,
@@ -457,6 +615,53 @@ func (r *CopilotLogRepository) parseDetails(val interface{}) (aic, aiu float64) 
 		}
 	}
 	return 0, 0
+}
+
+// mapModelToCredits maps a model name to its typical Copilot credits and AIU.
+func mapModelToCredits(model string) (aic, aiu float64) {
+	if model == "" {
+		return 0, 0
+	}
+	modelLower := strings.ToLower(model)
+
+	// Default rate for standard models is 1.0 credit (1x)
+	var rate float64 = 1.0
+
+	// Special rates for mini / lightweight models
+	if strings.Contains(modelLower, "mini") || strings.Contains(modelLower, "haiku") || strings.Contains(modelLower, "flash") {
+		rate = 0.3
+	} else if strings.Contains(modelLower, "gpt-3.5") {
+		rate = 0.2
+	}
+
+	return rate, rate * 1000000000
+}
+
+// extractModel recursively searches for a "model" field inside the map.
+func (r *CopilotLogRepository) extractModel(m map[string]interface{}) string {
+	for k, v := range m {
+		if strings.ToLower(k) == "model" {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+		// Recurse into nested maps/slices
+		switch nested := v.(type) {
+		case map[string]interface{}:
+			if mVal := r.extractModel(nested); mVal != "" {
+				return mVal
+			}
+		case []interface{}:
+			for _, item := range nested {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if mVal := r.extractModel(itemMap); mVal != "" {
+						return mVal
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // extractRootTokens looks for token properties directly on the root of the event map.

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github-copilot-credit-count/internal/domain"
 )
@@ -334,4 +335,156 @@ func TestParseJSONLSessionWithNestedRequestsAndDeduplication(t *testing.T) {
 		t.Errorf("req2 tokens mismatch: %+v", req2.Tokens)
 	}
 }
+
+func TestResolveCLIWorkspace(t *testing.T) {
+	testDir := filepath.Join(".", "test_temp_cli_workspace")
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		t.Fatalf("failed to create test directory: %v", err)
+	}
+	defer os.RemoveAll(testDir)
+
+	mockYAMLContent := `id: test-session-123
+cwd: C:\Users\test-user\my-project
+client_name: github/cli
+name: Test CLI Session Name
+`
+
+	if err := os.WriteFile(filepath.Join(testDir, "workspace.yaml"), []byte(mockYAMLContent), 0644); err != nil {
+		t.Fatalf("failed to write workspace.yaml: %v", err)
+	}
+
+	repo := NewCopilotLogRepository("")
+	ws := repo.resolveCLIWorkspace(testDir, "test-session-123")
+
+	expectedID := "cli_c:/users/test-user/my-project"
+	expectedPath := "C:/Users/test-user/my-project"
+	expectedName := "Test CLI Session Name (CLI)"
+
+	if ws.ID != expectedID {
+		t.Errorf("expected ID %q, got %q", expectedID, ws.ID)
+	}
+	if ws.Path != expectedPath {
+		t.Errorf("expected Path %q, got %q", expectedPath, ws.Path)
+	}
+	if ws.Name != expectedName {
+		t.Errorf("expected Name %q, got %q", expectedName, ws.Name)
+	}
+}
+
+func TestParseCLIEvents(t *testing.T) {
+	testDir := filepath.Join(".", "test_temp_cli_events")
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		t.Fatalf("failed to create test directory: %v", err)
+	}
+	defer os.RemoveAll(testDir)
+
+	mockJSONLContent := `{"type":"session.start","data":{"sessionId":"s1","copilotVersion":"1.0.61"},"id":"id-start","timestamp":"2026-06-11T17:30:00.000Z"}
+{"type":"assistant.message","data":{"messageId":"msg-1","model":"gpt-5-mini","outputTokens":120,"requestId":"req-1"},"id":"id-msg1","timestamp":"2026-06-11T17:31:00.000Z"}
+{"type":"assistant.message","data":{"messageId":"msg-2","model":"gpt-5-mini","outputTokens":250,"requestId":"req-2"},"id":"id-msg2","timestamp":"2026-06-11T17:32:00.000Z"}
+`
+
+	filePath := filepath.Join(testDir, "events.jsonl")
+	if err := os.WriteFile(filePath, []byte(mockJSONLContent), 0644); err != nil {
+		t.Fatalf("failed to write events.jsonl: %v", err)
+	}
+
+	repo := NewCopilotLogRepository("")
+	events := repo.parseJSONLSession(filePath, "test-ws", "s1")
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 parsed events, got %d", len(events))
+	}
+
+	// Find event by message ID
+	var ev1, ev2 *domain.SessionEvent
+	for i := range events {
+		if events[i].Timestamp.Format(time.RFC3339) == "2026-06-11T17:31:00Z" {
+			ev1 = &events[i]
+		} else if events[i].Timestamp.Format(time.RFC3339) == "2026-06-11T17:32:00Z" {
+			ev2 = &events[i]
+		}
+	}
+
+	if ev1 == nil || ev2 == nil {
+		t.Fatalf("expected events not found by timestamp")
+	}
+
+	if ev1.Tokens.Completion != 120 || ev1.Tokens.Total != 120 {
+		t.Errorf("ev1 tokens mismatch: %+v", ev1.Tokens)
+	}
+	if ev1.Tokens.AIC != 0.3 || ev1.Tokens.AIU != 300000000 {
+		t.Errorf("ev1 credits mismatch: AIC=%f, AIU=%f", ev1.Tokens.AIC, ev1.Tokens.AIU)
+	}
+	if ev2.Tokens.Completion != 250 || ev2.Tokens.Total != 250 {
+		t.Errorf("ev2 tokens mismatch: %+v", ev2.Tokens)
+	}
+	if ev2.Tokens.AIC != 0.3 || ev2.Tokens.AIU != 300000000 {
+		t.Errorf("ev2 credits mismatch: AIC=%f, AIU=%f", ev2.Tokens.AIC, ev2.Tokens.AIU)
+	}
+}
+
+func TestScanCLISessions(t *testing.T) {
+	// Create mock CLI storage directory
+	cliDir, err := os.MkdirTemp("", "github-copilot-cli-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp CLI storage dir: %v", err)
+	}
+	defer os.RemoveAll(cliDir)
+
+	sessionID := "session-abc"
+	sessionDir := filepath.Join(cliDir, sessionID)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		t.Fatalf("failed to create session dir: %v", err)
+	}
+
+	// workspace.yaml
+	yamlContent := `id: session-abc
+cwd: C:\projects\my-app
+client_name: github/cli
+`
+	if err := os.WriteFile(filepath.Join(sessionDir, "workspace.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("failed to write workspace.yaml: %v", err)
+	}
+
+	// events.jsonl
+	eventsContent := `{"type":"assistant.message","data":{"messageId":"m1","model":"gpt-4o","outputTokens":80},"id":"e1","timestamp":"2026-06-11T17:40:00.000Z"}`
+	if err := os.WriteFile(filepath.Join(sessionDir, "events.jsonl"), []byte(eventsContent), 0644); err != nil {
+		t.Fatalf("failed to write events.jsonl: %v", err)
+	}
+
+	repo := NewCopilotLogRepository("")
+	// Prevent scanning real IDE storage paths in the test
+	repo.storagePaths = nil
+	// Manually inject the mock CLI storage path
+	repo.cliStoragePaths = []string{cliDir}
+
+	events, workspaces, err := repo.ScanSessions()
+	if err != nil {
+		t.Fatalf("ScanSessions failed: %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(workspaces))
+	}
+
+	expectedWSID := "cli_c:/projects/my-app"
+	ws, ok := workspaces[expectedWSID]
+	if !ok {
+		t.Fatalf("expected workspace ID %q not found", expectedWSID)
+	}
+	if ws.Name != "my-app (CLI)" {
+		t.Errorf("expected workspace name 'my-app (CLI)', got %q", ws.Name)
+	}
+
+	if events[0].Tokens.Total != 80 || events[0].Tokens.Completion != 80 {
+		t.Errorf("token count mismatch: %+v", events[0].Tokens)
+	}
+	if events[0].Tokens.AIC != 1.0 || events[0].Tokens.AIU != 1000000000 {
+		t.Errorf("credits mismatch: AIC=%f, AIU=%f", events[0].Tokens.AIC, events[0].Tokens.AIU)
+	}
+}
+
 
